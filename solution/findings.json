@@ -1,0 +1,72 @@
+{
+  "team": "Pham-Tien-Hung",
+  "schema_version": 1,
+  "findings": [
+    {
+      "fault_class": "error_spike",
+      "evidence": {"metric": "baseline_tool_error_rate", "observed": 0.18, "trace_ids": []},
+      "root_cause": "The shipped config injects an 18% tool error rate and disables retries.",
+      "suggested_fix": "Set tool_error_rate to 0 and enable bounded retry."
+    },
+    {
+      "fault_class": "latency_spike",
+      "evidence": {"metric": "baseline_execution_limits", "observed": "premium tier, 12 steps, no loop guard, no timeout", "trace_ids": []},
+      "root_cause": "Unbounded slow paths and repeated tool calls create long-tail latency.",
+      "suggested_fix": "Use economy tier, an explicit timeout, loop guard, and a small step/tool budget."
+    },
+    {
+      "fault_class": "cost_blowup",
+      "evidence": {"metric": "baseline_cost_knobs", "observed": "premium tier, verbose system, 2000 completion tokens, unlimited tools", "trace_ids": []},
+      "root_cause": "The shipped config encourages verbose output and excessive tool/model work.",
+      "suggested_fix": "Use a concise prompt, economy tier, 350 completion tokens, cache, and tool_budget 3."
+    },
+    {
+      "fault_class": "quality_drift",
+      "evidence": {"metric": "baseline_session_drift_rate", "observed": 0.06, "trace_ids": []},
+      "root_cause": "Session drift is injected and context is never reset.",
+      "suggested_fix": "Set session_drift_rate to 0 and reset context every independent request."
+    },
+    {
+      "fault_class": "infinite_loop",
+      "evidence": {"metric": "baseline_loop_controls", "observed": "loop_guard=false, max_steps=12, tool_budget=0", "trace_ids": []},
+      "root_cause": "Nothing prevents repeated identical tool calls.",
+      "suggested_fix": "Enable loop_guard and cap tool calls and steps."
+    },
+    {
+      "fault_class": "tool_failure",
+      "evidence": {"metric": "baseline_tool_data_controls", "observed": "normalize_unicode=false and a false MacBook catalog override", "trace_ids": []},
+      "root_cause": "Unicode destinations are not normalized and catalog truth is overridden.",
+      "suggested_fix": "Enable Unicode normalization and clear catalog_override."
+    },
+    {
+      "fault_class": "pii_leak",
+      "evidence": {"metric": "baseline_redact_pii", "observed": false, "trace_ids": []},
+      "root_cause": "The agent is allowed to echo customer email and phone data.",
+      "suggested_fix": "Enable config redaction, prohibit PII echo in the prompt, and redact wrapper input/output."
+    },
+    {
+      "fault_class": "fabrication",
+      "evidence": {"metric": "baseline_prompt_grounding", "observed": "No grounding or refusal rule", "trace_ids": []},
+      "root_cause": "The shipped prompt asks for a total even when stock or tool data is unavailable.",
+      "suggested_fix": "Require tool-grounded data and no total for unavailable, unknown, or failed cases."
+    },
+    {
+      "fault_class": "arithmetic_error",
+      "evidence": {"metric": "baseline_temperature_and_verification", "observed": "temperature=1.6 and verify=false", "trace_ids": []},
+      "root_cause": "High sampling variance and no exact arithmetic contract produce wrong totals.",
+      "suggested_fix": "Lower temperature, enable verify, and specify the exact floor-discount formula."
+    },
+    {
+      "fault_class": "tool_overuse",
+      "evidence": {"metric": "baseline_tool_budget", "observed": 0, "trace_ids": []},
+      "root_cause": "The weak prompt and unlimited tool budget encourage unnecessary repeated calls.",
+      "suggested_fix": "Call each relevant tool at most once and set tool_budget to 3."
+    },
+    {
+      "fault_class": "prompt_injection",
+      "evidence": {"metric": "baseline_injection_defense", "observed": "No instruction/data boundary or note sanitizer", "trace_ids": []},
+      "root_cause": "Order-note text can override trusted prices and agent behavior.",
+      "suggested_fix": "Treat notes as untrusted data, use only tool prices, and strip appended notes in the wrapper."
+    }
+  ]
+}
