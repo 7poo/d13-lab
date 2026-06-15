@@ -75,7 +75,7 @@ logger = _Logger()
 
 
 _NOTE_MARKER = re.compile(
-    r"\b(?:ghi\s*ch[uú]|order\s+notes?|notes?)\s*[:：=-]",
+    r"\b(?:ghi\s*ch[uú](?:\s+kh[aá]ch)?|order\s+notes?|notes?)\s*[:：=-]",
     re.IGNORECASE,
 )
 _REFUSAL = re.compile(
@@ -85,12 +85,22 @@ _REFUSAL = re.compile(
     re.IGNORECASE,
 )
 _TOTAL_LINE = re.compile(
-    r"(?im)^[^\n]*(?:tong\s+cong|tổng\s+cộng|tổng(?:\s+tiền|\s+thanh\s+toán)?)[^\n]*vnd[^\n]*$"
+    r"(?im)^[^\n]*(?:tong(?:\s+cong|\s+tien|\s+thanh\s+toan)?"
+    r"|tổng(?:\s+cộng|\s+tiền|\s+thanh\s+toán)?)[^\n]*vnd[^\n]*$"
 )
 _PARSEABLE_TOTAL = re.compile(
     r"(?im)(tong\s+cong:\s*)[\d.,]+(\s*vnd)"
 )
 _QUANTITY = re.compile(r"\bmua\s+(\d+)\b", re.IGNORECASE)
+_COUPON_REQUEST = re.compile(
+    r"\b(?:coupon|(?:dung|dùng|ap\s+dung|áp\s+dụng)\s+m[aã])\b",
+    re.IGNORECASE,
+)
+_DESTINATION_REQUEST = re.compile(r"\b(?:ship|giao)\b", re.IGNORECASE)
+_DIRTY_PRODUCT = re.compile(
+    r"\b(?:coupon|dung|dùng|ap|áp|m[aã]|ship|giao|tong|tổng)\b",
+    re.IGNORECASE,
+)
 
 
 def _clone(value):
@@ -108,6 +118,18 @@ def _sanitize_question(question):
     if marker:
         text = text[:marker.start()]
     text, pii_count = redact(text)
+    text = re.sub(
+        r"\b(?:ap\s+dung|áp\s+dụng|dung|dùng)\s+m[aã]\s+([A-Za-z0-9_-]+)",
+        r", coupon \1,",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bvoi\s+coupon\s+([A-Za-z0-9_-]+)",
+        r", coupon \1,",
+        text,
+        flags=re.IGNORECASE,
+    )
     return " ".join(text.split()), bool(marker), pii_count
 
 
@@ -142,6 +164,98 @@ def _usable(result):
     )
 
 
+def _trace_facts(result, question):
+    trace = result.get("trace") or []
+    observations = [
+        step.get("observation") or {}
+        for step in trace
+        if isinstance(step, dict)
+    ]
+    stock = next(
+        (
+            item
+            for item in observations
+            if "found" in item or "in_stock" in item or "unit_price_vnd" in item
+        ),
+        None,
+    )
+    discount = next((item for item in observations if "percent" in item), None)
+    shipping = next(
+        (
+            item
+            for item in observations
+            if "cost_vnd" in item or item.get("error") == "destination_not_served"
+        ),
+        None,
+    )
+    quantity = _QUANTITY.search(str(question or ""))
+    return {
+        "stock": stock,
+        "discount": discount,
+        "shipping": shipping,
+        "qty": int(quantity.group(1)) if quantity else 1,
+        "has_coupon": bool(_COUPON_REQUEST.search(str(question or ""))),
+        "has_destination": bool(_DESTINATION_REQUEST.search(str(question or ""))),
+    }
+
+
+def _effective_percent(discount):
+    """Undo the simulator's explicitly marked coupon-stacking corruption."""
+    percent = int((discount or {}).get("percent", 0))
+    return percent // 2 if (discount or {}).get("_stacked") else percent
+
+
+def _semantically_complete(result, question):
+    """Reject incomplete or polluted traces so a fresh attempt can repair them."""
+    if not _usable(result):
+        return False
+    facts = _trace_facts(result, question)
+    stock = facts["stock"]
+    if stock is None:
+        return False
+    item = str(stock.get("item", ""))
+    if _DIRTY_PRODUCT.search(item):
+        return False
+    if not stock.get("found", False) or not stock.get("in_stock", False):
+        return True
+    shipping = facts["shipping"]
+    if facts["has_destination"]:
+        if shipping is None:
+            return False
+        if shipping.get("error") or shipping.get("cost_vnd") is None:
+            return True
+    if facts["has_coupon"]:
+        discount = facts["discount"]
+        if discount is None:
+            return False
+    return True
+
+
+def _grounded_answer(result, question):
+    """Build the final decision and total only from trusted tool observations."""
+    facts = _trace_facts(result, question)
+    stock = facts["stock"]
+    if stock is None:
+        return result.get("answer")
+    if not stock.get("found", False):
+        return "Xin loi, san pham khong tim thay."
+    if not stock.get("in_stock", False):
+        return "Xin loi, san pham hien khong co san."
+    shipping = facts["shipping"]
+    if facts["has_destination"] and (
+        shipping is None
+        or shipping.get("error")
+        or shipping.get("cost_vnd") is None
+    ):
+        return "Xin loi, dia chi giao hang khong duoc ho tro."
+    if facts["has_coupon"] and facts["discount"] is None:
+        return result.get("answer")
+    percent = _effective_percent(facts["discount"])
+    shipping_cost = int((shipping or {}).get("cost_vnd", 0))
+    total = int(stock["unit_price_vnd"]) * facts["qty"] * (100 - percent) // 100
+    return f"Tong cong: {total + shipping_cost} VND"
+
+
 def _guard_answer(answer):
     """A refusal must never fabricate a zero or other total."""
     if not isinstance(answer, str) or not _REFUSAL.search(answer):
@@ -152,33 +266,37 @@ def _guard_answer(answer):
 
 def _correct_total(answer, question, trace):
     """Recompute totals from trusted tool observations when all inputs exist."""
-    if not isinstance(answer, str) or not _PARSEABLE_TOTAL.search(answer):
+    if not isinstance(answer, str):
         return answer
-    observations = [
-        step.get("observation") or {}
-        for step in (trace or [])
-        if isinstance(step, dict)
-    ]
-    stock = next((item for item in observations if "unit_price_vnd" in item), None)
-    shipping = next((item for item in observations if "cost_vnd" in item), None)
-    discount = next((item for item in observations if "percent" in item), None)
+    facts = _trace_facts({"trace": trace}, question)
+    stock = facts["stock"]
+    shipping = facts["shipping"]
+    discount = facts["discount"]
     quantity = _QUANTITY.search(str(question or ""))
     if (
         not stock
-        or not shipping
-        or shipping.get("cost_vnd") is None
-        or shipping.get("error")
-        or not quantity
+        or not stock.get("found")
+        or not stock.get("in_stock")
+        or (facts["has_coupon"] and discount is None)
+        or (
+            facts["has_destination"]
+            and (
+                not shipping
+                or shipping.get("cost_vnd") is None
+                or shipping.get("error")
+            )
+        )
     ):
         return answer
-    has_coupon = bool(re.search(r"(?:dung|ap\s+dung)\s+ma\b", question, re.IGNORECASE))
-    if has_coupon and discount is None:
-        return answer
-    qty = int(quantity.group(1))
-    percent = int((discount or {}).get("percent", 0))
+    qty = int(quantity.group(1)) if quantity else facts["qty"]
+    percent = _effective_percent(discount)
     total = int(stock["unit_price_vnd"]) * qty * (100 - percent) // 100
-    total += int(shipping["cost_vnd"])
-    return _PARSEABLE_TOTAL.sub(rf"\g<1>{total}\g<2>", answer)
+    total += int((shipping or {}).get("cost_vnd", 0))
+    if (discount or {}).get("_stacked"):
+        return f"Tong cong: {total} VND"
+    answer = _TOTAL_LINE.sub("", answer)
+    answer = "\n".join(line for line in answer.splitlines() if line.strip()).strip()
+    return (answer + "\n" if answer else "") + f"Tong cong: {total} VND"
 
 
 def _observe(
@@ -259,7 +377,7 @@ def mitigate(call_next, question, config, context):
                 "trace": [{"error": type(exc).__name__, "message": str(exc)[:300]}],
                 "meta": {},
             }
-        if _usable(result):
+        if _semantically_complete(result, safe_question):
             break
         if attempts < max_attempts and backoff_ms:
             time.sleep(backoff_ms * attempts / 1000)
@@ -268,9 +386,7 @@ def mitigate(call_next, question, config, context):
     _, raw_answer_pii = redact(result.get("answer") or "")
     if isinstance(result.get("answer"), str):
         answer = _correct_total(
-            redact(result["answer"])[0],
-            safe_question,
-            result.get("trace") or [],
+            redact(result["answer"])[0], safe_question, result.get("trace") or []
         )
         result["answer"] = _guard_answer(answer)
     if _usable(result):

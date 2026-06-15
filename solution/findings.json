@@ -22,9 +22,9 @@
     },
     {
       "fault_class": "quality_drift",
-      "evidence": {"metric": "baseline_session_drift_rate", "observed": 0.06, "trace_ids": []},
-      "root_cause": "Session drift is injected and context is never reset.",
-      "suggested_fix": "Set session_drift_rate to 0 and reset context every independent request."
+      "evidence": {"metric": "private_coupon_stacking", "observed": "22/54 private coupon traces had _stacked=true versus 0/74 public traces", "trace_ids": ["prv-005", "prv-018", "prv-079"]},
+      "root_cause": "Private quality drift intermittently corrupts coupon results by stacking the discount.",
+      "suggested_fix": "Set session_drift_rate to 0, reset context, and normalize discounts explicitly marked _stacked."
     },
     {
       "fault_class": "infinite_loop",
@@ -64,9 +64,9 @@
     },
     {
       "fault_class": "prompt_injection",
-      "evidence": {"metric": "baseline_injection_defense", "observed": "No instruction/data boundary or note sanitizer", "trace_ids": []},
-      "root_cause": "Order-note text can override trusted prices and agent behavior.",
-      "suggested_fix": "Treat notes as untrusted data, use only tool prices, and strip appended notes in the wrapper."
+      "evidence": {"metric": "private_fake_price_notes", "observed": "20/80 private questions appended GHI CHU KHACH with a fake system price versus 0/120 public questions", "trace_ids": ["prv-006", "prv-011", "prv-014"]},
+      "root_cause": "Private order-note text attempts to override trusted prices and agent behavior.",
+      "suggested_fix": "Treat notes as untrusted data, use only tool prices, and strip GHI CHU KHACH notes before calling the agent."
     }
   ]
 }
